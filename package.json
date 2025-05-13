@@ -1,0 +1,13 @@
+{
+  "name": "llm-cache-test",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Test script for Cloudflare Worker LLM cache",
+  "main": "test-llm-cache.js",
+  "scripts": {
+    "test": "node test-llm-cache.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}

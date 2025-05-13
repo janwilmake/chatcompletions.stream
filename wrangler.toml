@@ -2,7 +2,7 @@ name = "llm-stream-cache"
 main = "main.ts"
 compatibility_date = "2024-01-01"
 dev.port = 3000
-
+assets.directory = "./"
 route.custom_domain = true
 route.pattern = "stream.chatcompletions.com"
 

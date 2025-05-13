@@ -8,17 +8,12 @@ interface Env {
 export class LLMStreamDO {
   private state: DurableObjectState;
   private env: Env;
-  private currentStream: ReadableStream<Uint8Array> | null = null;
   private accumulatedData: Uint8Array[] = [];
   private hash: string | null = null;
   private streamComplete: boolean = false;
-  private selfDestructTimer: number | null = null;
-  private responsePromise: Promise<Response> | null = null;
-  private responsePromiseResolve: ((value: Response) => void) | null = null;
-  private subsequentRequests: Array<{
-    resolve: (value: Response) => void;
-    reject: (reason: any) => void;
-  }> = [];
+  private selfDestructTimer: NodeJS.Timeout | null = null;
+  private isFirstRequest: boolean = true;
+  private activeControllers: ReadableStreamDefaultController<Uint8Array>[] = [];
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -35,23 +30,7 @@ export class LLMStreamDO {
       return new Response("Missing x-name header", { status: 400 });
     }
 
-    // If this is the first request, set up the stream
-    if (!this.currentStream) {
-      this.hash = hash;
-
-      // Create a promise that will be resolved when the first response is ready
-      this.responsePromise = new Promise((resolve) => {
-        this.responsePromiseResolve = resolve;
-      });
-
-      // Start the actual API request
-      this.initializeStream(request);
-
-      // Return the promise that will resolve with the streaming response
-      return this.responsePromise;
-    }
-
-    // For subsequent requests, if stream is complete, return accumulated data
+    // If stream is complete, return accumulated data
     if (this.streamComplete) {
       const fullData = new Uint8Array(
         this.accumulatedData.reduce((acc, chunk) => acc + chunk.length, 0),
@@ -71,10 +50,45 @@ export class LLMStreamDO {
       });
     }
 
-    // For subsequent requests while streaming, return a new stream
-    // that starts with accumulated data and tees the current stream
-    return new Promise((resolve, reject) => {
-      this.subsequentRequests.push({ resolve, reject });
+    // Create a new stream for this request
+    const stream = new ReadableStream({
+      start: (controller) => {
+        // First, send all accumulated data
+        for (const chunk of this.accumulatedData) {
+          controller.enqueue(chunk);
+        }
+
+        // If stream is already complete, close immediately
+        if (this.streamComplete) {
+          controller.close();
+          return;
+        }
+
+        // Add this controller to the list of active controllers
+        this.activeControllers.push(controller);
+
+        // If this is the first request, start the upstream fetch
+        if (this.isFirstRequest) {
+          this.isFirstRequest = false;
+          this.hash = hash;
+          this.initializeStream(request);
+        }
+      },
+      cancel: (controller) => {
+        // Remove this controller from the active list when canceled
+        const index = this.activeControllers.indexOf(controller);
+        if (index > -1) {
+          this.activeControllers.splice(index, 1);
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
     });
   }
 
@@ -85,19 +99,6 @@ export class LLMStreamDO {
         throw new Error("Missing authorization header");
       }
 
-      //   const llmRequest = new Request(
-      //     // the url is the actual url we want to proxy to
-      //     request.url,
-      //     {
-      //       method: "POST",
-      //       headers: {
-      //         Authorization: authorization,
-      //         "Content-Type": "application/json",
-      //       },
-      //       body: await request.text(),
-      //     },
-      //   );
-
       // Forward the request to the actual LLM API
       const llmResponse = await fetch(request);
 
@@ -106,125 +107,53 @@ export class LLMStreamDO {
       }
 
       const reader = llmResponse.body!.getReader();
-      const decoder = new TextDecoder();
 
-      // Create the main stream that accumulates data and handles distribution
-      const stream = new ReadableStream({
-        start: (controller) => {
-          const pump = async () => {
-            try {
-              const { done, value } = await reader.read();
+      // Read from the upstream and broadcast to all active controllers
+      const pump = async () => {
+        try {
+          const { done, value } = await reader.read();
 
-              if (done) {
-                controller.close();
-                this.handleStreamComplete();
-                return;
-              }
-
-              // Accumulate the data
-              this.accumulatedData.push(value);
-
-              // Enqueue to the main stream
-              controller.enqueue(value);
-
-              // Handle subsequent requests
-              this.handleSubsequentRequests();
-
-              pump();
-            } catch (error) {
-              controller.error(error);
-              this.handleStreamError(error);
-            }
-          };
-
-          pump();
-        },
-      });
-
-      this.currentStream = stream;
-
-      // Create the response for the first request
-      const response = new Response(stream, {
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        },
-      });
-
-      if (this.responsePromiseResolve) {
-        this.responsePromiseResolve(response);
-      }
-    } catch (error) {
-      const errorResponse = new Response(
-        JSON.stringify({
-          error: error instanceof Error ? error.message : "Unknown error",
-        }),
-        { status: 500, headers: { "Content-Type": "application/json" } },
-      );
-
-      if (this.responsePromiseResolve) {
-        this.responsePromiseResolve(errorResponse);
-      }
-    }
-  }
-
-  private handleSubsequentRequests() {
-    while (this.subsequentRequests.length > 0) {
-      const request = this.subsequentRequests.shift()!;
-
-      // Create a stream that starts with accumulated data
-      const stream = new ReadableStream({
-        start: async (controller) => {
-          // First, send all accumulated data
-          for (const chunk of this.accumulatedData) {
-            controller.enqueue(chunk);
-          }
-
-          // If stream is complete, close immediately
-          if (this.streamComplete) {
-            controller.close();
+          if (done) {
+            this.handleStreamComplete();
             return;
           }
 
-          // Otherwise, tee the current stream and continue
-          if (this.currentStream) {
-            const [stream1, stream2] = this.currentStream.tee();
-            this.currentStream = stream1;
+          // Accumulate the data
+          this.accumulatedData.push(value);
 
-            const reader = stream2.getReader();
-            const pump = async () => {
-              try {
-                const { done, value } = await reader.read();
-                if (done) {
-                  controller.close();
-                  return;
-                }
-                controller.enqueue(value);
-                pump();
-              } catch (error) {
-                controller.error(error);
-              }
-            };
-            pump();
+          // Broadcast to all active controllers
+          for (const controller of this.activeControllers) {
+            try {
+              controller.enqueue(value);
+            } catch (e) {
+              // Controller might be closed, ignore
+            }
           }
-        },
-      });
 
-      const response = new Response(stream, {
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        },
-      });
+          pump();
+        } catch (error) {
+          this.handleStreamError(error);
+        }
+      };
 
-      request.resolve(response);
+      pump();
+    } catch (error) {
+      this.handleStreamError(error);
     }
   }
 
   private async handleStreamComplete() {
     this.streamComplete = true;
+
+    // Close all active controllers
+    for (const controller of this.activeControllers) {
+      try {
+        controller.close();
+      } catch (e) {
+        // Controller might already be closed
+      }
+    }
+    this.activeControllers = [];
 
     // Combine all accumulated data
     const fullData = new Uint8Array(
@@ -243,9 +172,6 @@ export class LLMStreamDO {
       });
     }
 
-    // Handle any remaining subsequent requests
-    this.handleSubsequentRequests();
-
     // Set self-destruct timer for 60 seconds
     this.selfDestructTimer = setTimeout(() => {
       // The DO will be garbage collected when there are no more references
@@ -253,11 +179,15 @@ export class LLMStreamDO {
   }
 
   private handleStreamError(error: any) {
-    // Handle any remaining subsequent requests with error
-    while (this.subsequentRequests.length > 0) {
-      const request = this.subsequentRequests.shift()!;
-      request.reject(error);
+    // Notify all active controllers of the error
+    for (const controller of this.activeControllers) {
+      try {
+        controller.error(error);
+      } catch (e) {
+        // Controller might already be closed
+      }
     }
+    this.activeControllers = [];
   }
 }
 
