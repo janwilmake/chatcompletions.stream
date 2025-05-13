@@ -220,7 +220,7 @@
             </div>
 
             <div class="response-box">
-                <h3>Request 2 (1s delay)</h3>
+                <h3>Request 2 (1.5s delay)</h3>
                 <div id="status2" class="status">Ready</div>
                 <div id="timing2" class="timing-info"></div>
                 <div id="response2" class="response-content"></div>
@@ -282,7 +282,7 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        model: 'gpt-3.5-turbo',
+                        model: 'gpt-4o',
                         messages: [
                             { role: 'user', content: prompt }
                         ],
@@ -362,7 +362,7 @@
                 // Start all three requests with their respective delays
                 await Promise.all([
                     makeRequest(1, 0),      // Immediate
-                    makeRequest(2, 1000),   // 1 second delay
+                    makeRequest(2, 1500),   // 1 second delay
                     makeRequest(3, 5000)    // 5 second delay
                 ]);
 

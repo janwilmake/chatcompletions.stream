@@ -16,3 +16,9 @@ The DO:
 - destroys itself 60 seconds after final result is submitted to KV (relying on eventual consistency of max 60 seconds)
 
 make this typesctip cloudflare worker
+
+# Non-goals:
+
+- Model configuration storage
+- Model Routing
+- Monetisation
