@@ -1,0 +1,19 @@
+name = "llm-stream-cache"
+main = "main.ts"
+compatibility_date = "2024-01-01"
+dev.port = 3000
+
+route.custom_domain = true
+route.pattern = "stream.chatcompletions.com"
+
+[[kv_namespaces]]
+binding = "CACHE_KV"
+id = "c8a1f3ff6170485a815fd21e834a65d6"
+
+[[durable_objects.bindings]]
+name = "LLM_STREAM_DO"
+class_name = "LLMStreamDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["LLMStreamDO"]
