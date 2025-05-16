@@ -1,3 +1,11 @@
+# LLMStreamDO - share chat completion streams across multiple requests
+
+**Why**? See this post of [Theo](https://x.com/theo/status/1923336741420765557) who made something similar - it perfectly explains why you may want to stream your LLM request without risking it may be interrupted.
+
+**Limitations**: [be wary of wall clock time](https://x.com/janwilmake/status/1923340938266501330) and the fact that you [pay for it](https://developers.cloudflare.com/durable-objects/platform/pricing/) in durable objects when designing a system that might use this.
+
+# SPEC
+
 `LLMStreamDO is a cloudflare worker, backed by durable objects.`
 
 - only listens to POST /{llmBasePath}/chat/completions with Authorization bearer token and json body
@@ -15,7 +23,7 @@ The DO:
 - While streaming, takes any other POST request, which will always connect to the current `ReadableStream` but prepend it with all results so far.
 - destroys itself 60 seconds after final result is submitted to KV (relying on eventual consistency of max 60 seconds)
 
-make this typesctip cloudflare worker
+Make this typesctip cloudflare worker
 
 # Non-goals:
 
